@@ -40,8 +40,11 @@ Route::group(['middleware' => 'auth:api'], function(){
             Route::post('{role}/permissions', [RoleController::class, 'assignPermission']);
     
         });
+        Route::prefix('users')->group(function () {
+            Route::post('/{id}/roles', [UserController::class, 'assignRole']);
+            Route::delete('/{id}/roles', [UserController::class, 'revokeRole']);
+        });
     });
-
     Route::group(['middleware' => 'role:manager'], function (){
         Route::prefix('permissions')->group(function () {
             Route::resource('/', PermissionController::class)->names([
@@ -54,15 +57,7 @@ Route::group(['middleware' => 'auth:api'], function(){
         });
 
     });
-    
-    Route::prefix('users')->group(function () {
-        Route::post('/{id}/roles', [UserController::class, 'assignRole']);
-        Route::delete('/{id}/roles', [UserController::class, 'revokeRole']);
-    });
-    
-    
-    
-    
+
 });
 
 
