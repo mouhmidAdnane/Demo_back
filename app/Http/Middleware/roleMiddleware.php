@@ -6,31 +6,29 @@ use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
+use Spatie\Permission\Traits\HasRoles;
 
 class roleMiddleware
 {
     /**
      * Handle an incoming request.
      *
+     * @param  \Illuminate\Http\Request  $request
      * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
+     * @param  mixed  ...$roles
+     * @return \Symfony\Component\HttpFoundation\Response
      */
-    public function handle(Request $request, Closure $next, ...$permissions): Response{
-        if(!Auth::guard('api')->check()){
-            return response()->json(["error"=> "unauthorized"], 403);
-        }
-
-        if (empty($permission)) {
+    public function handle(Request $request, Closure $next, ...$roles): Response
+    {
+        if(empty($roles))
             return $next($request);
-        }
 
-        foreach($permissions as $permission){
-            
-            if(Auth::guard('api')->user()->hasPermissionTo($permission)){
-                return $next($request);
-            }
-            
+        $user = Auth::guard('api')->user();
+        foreach ($roles as $role) {
+            if ($user->hasRole($role)) 
+                return $next($request);   
         }
-        return response()->json(["error"=> "unauthorized"], 403);
-
+        
+        return response()->json(['error' => 'Unauthorized.'], 403);
     }
 }

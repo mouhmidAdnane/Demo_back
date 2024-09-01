@@ -48,6 +48,10 @@ return [
 
     'encrypt' => false,
 
+    /*----------------------------------------------------------------*/
+
+    /*----------------------------------------------------------------*/
+
     /*
     |--------------------------------------------------------------------------
     | Session File Location
@@ -212,3 +216,14 @@ return [
     'partitioned' => false,
 
 ];
+
+// return [
+//     'driver' => env('SESSION_DRIVER', 'file'),
+//     'lifetime' => env('SESSION_LIFETIME', 120),
+//     'expire_on_close' => false,
+//     'encrypt' => false,
+//     'secure' => env('SESSION_SECURE_COOKIE', null),
+//     'http_only' => true,
+//     'same_site' => 'lax',
+//     'domain' => env('SESSION_DOMAIN', null),
+// ];

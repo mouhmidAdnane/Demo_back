@@ -2,68 +2,348 @@
 
 namespace App\Services;
 
+use App\Utils\userHelper;
+use App\Utils\ValidationRules;
+use App\Repositories\RoleRepository;
+use App\Repositories\UserRepository;
+use Illuminate\Support\Facades\Auth;
+use App\Repositories\PermissionRepository;
+use App\Services\Interfaces\HasRoleInterface;
+use App\Services\Interfaces\ServiceInterface;
+use App\Services\Interfaces\AuthentifiableInterface;
+use App\Services\Interfaces\UserHasPermissionInterface;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use App\Models\User;
-use Validator;
 
-class UserService{
+class UserService implements ServiceInterface, AuthentifiableInterface, HasRoleInterface , UserHasPermissionInterface
+{
 
-    public function createUser(array $data):array{
-        $validator = Validator::make($data, User::$storeRules);
+    private $userRepository;
+    private $roleRepository;
+    // private $permissionRepository;
 
-        if($validator->fails())
-            return ["success"=> false,  "message"=>$validator->errors()];
+    public function __construct(UserRepository $userRepository, RoleRepository $roleRepository)
+    {
+        $this->userRepository = $userRepository;
+        $this->roleRepository = $roleRepository;
+    }
 
-        if(!User::where("email", $data["email"])->exists());
-            return ["success"=> false,  "message"=>"User aleary exist!"];
-            
-        $data["password"]= bcrypt($data["password"]);
-        $user= User::create($data);
-        if(!$user)
-            throw new \Exception("Failed to create user");
-        $success["token"]= $user->createToken("restaurant")->accessToken;
-        return ["success"=>$success];
+
+
+    public function create(array $data): array
+    {
+        $validator = ValidationRules::validate($data, ValidationRules::$userStoreRules);
+        $data["password"] = UserHelper::hashPassword($data["password"]);
+        unset($data['c_password']);
+        $user = $this->userRepository->create($data)["data"];
+
+        if (isset($data['roles'])) {
+            $assignRolesResult = $this->assignManyRoles($user, $data['roles']);
+            if (!$assignRolesResult['success'])
+                return $assignRolesResult;
+
+            return [
+                "success" => true,
+                "message" => "User created and roles assigned successfully",
+                "user" => $user,
+                "roles" => $assignRolesResult['roles']
+            ];
+        }
+
+        return [
+            "success" => true,
+            "message" => "User created successfully",
+            "user" => $user
+        ];
+    }
+
+    public function update(int $id, array $data): array
+    {
+        $validator = ValidationRules::validate($data, ValidationRules::userUpdateRules($id));
+        $user = $this->userRepository->find($id)["data"];
+
+
+        if (isset($data["roles"])){
+            $roles= $data["roles"];
+            unset($data['roles']);
+        }
         
-    }
+        if (isset($data["password"]))
+            $data["password"] = UserHelper::hashPassword($data["password"]);
+    
+        unset($data['c_password']);
 
-    public function updateUser(User $userId, array $data)
-    {
-        $validator = Validator::make($data,User::$updateRules);
+        if (isset($roles)) {
             
-            if ($validator->fails())
-                return ["success"=> false,  "message"=>$validator->errors()];
-            
-            $user= User::find($userId)->first();
-            if ($user === null) 
-                return ["success"=> false,"message" => "User not found"];
-            
-            if($data["password"] != null) 
-                $data["password"]= bcrypt($data["password"]);
+            $assignRolesResult = $this->assignManyRoles($user, $roles);
+            if (!$assignRolesResult['success'])
+                return $assignRolesResult;
+        }
 
-            $user->update($data);
-            return ["success"=> true,  "message"=>"user updated successfully"];
+        $user = $this->userRepository->update($id, $data);
+        return ["success" => true,  "message" => "user updated successfully", "user" => $user];
     }
 
-    public function deleteUser(User $userId):array
+    public function delete(int $id): array
     {
-        $user = User::find($userId)->first();
-            if ($user == null) 
-                return ["success"=> false,  "message"=>"user not found"];
-            $user->delete();
-            return ["success"=> true,  "message"=>"user deleted successfully"];
+        $user = $this->userRepository->exists(["id" => $id]);
+        if (!$user)
+            throw new ModelNotFoundException("User not found");
+        $result = $this->userRepository->delete($id);
+        if ($result)
+            return ["success" => true,  "message" => "user deleted successfully"];
     }
 
-    public function getUserById($userId)
+    public function find($id): array
     {
-        // Logic to fetch user by ID
+        $user = $this->userRepository->find($id);
+        return ["success" => true,  "user" => $user];
     }
 
-    public function getAllUsers():array
+    public function getUserInformation(int $id): array
     {
-        $users = User::all();
-            if (empty($users)) 
-                return ["success"=> false,  "message"=>"no users found"];
-            return ["success"=> true,  "data"=>$users];
+        $result =  $this->userRepository->findUserInformation($id);
+
+        $user = [
+            'id' => $result['id'],
+            'first_name' => $result['first_name'],
+            'last_name' => $result['last_name'],
+            'email' => $result['email'],
+            'phone' => $result['phone']
+        ];
+        $roles = $result['roles'];
+        // $permissions = $result->permissions;
+
+        return [
+            'success' => true,
+            'user' => $user,
+            'roles' => $roles,
+            // 'permissions' => $permissions
+        ];
     }
+
+    public function getAll(int $perPage = 10, ?int $page = null): array
+    {
+        $result= [];
+        if ($page === null) {
+            $users = $this->userRepository->all();
+    
+            if ($users->isEmpty()) 
+                return [
+                    'success' => false,
+                    'message' => 'No users found',
+                ];
+
+            $result['success'] = true;
+            $result['data'] = $users;
+    
+        } else {
+            $users = $this->userRepository->getPage($perPage, $page);
+    
+            if ($users->isEmpty()) {
+                return [
+                    'success' => false,
+                    'message' => 'No users found',
+                ];
+            }
+
+            $metadata = [
+                'total' => $users->total(),
+                'current_page' => $users->currentPage(),
+                'last_page' => $users->lastPage(),
+                'per_page' => $users->perPage(),
+                'from' => $users->firstItem(),
+                'to' => $users->lastItem(),
+            ];
+
+            $result['success'] = true;
+            $result['data'] = $users->items();
+            $result['metadata'] = $metadata;
+        }
+
+        return $result;
+    }
+
+
+
+    public function regiser(array $data): array
+    {
+        $validator = ValidationRules::validate($data, ValidationRules::$userStoreRules);
+        $user = $this->userRepository->create($data);
+        $success["token"] = $user["data"]->createToken("demo")->accessToken;
+        return ['success' => true, 'user' => $user["data"], 'token' => $success["token"]];
+    }
+
+    // public function login(array $data): array
+    // {
+
+    //     $validator = ValidationRules::validate($data, ValidationRules::$userLoginRules);
+    //     $loginCheck = UserHelper::attemptLoging($data);
+    //     if (!$loginCheck)
+    //         return ["success" => false, "message" => "Invalid credentials"];
+
+    //     $userId = Auth::id();
+    //     $user = $this->userRepository->findUserInformation($userId);
+
+    //     if (!$user) {
+    //         return [
+    //             'success' => false,
+    //             'message' => 'Authentication failed'
+    //         ];
+    //     }
+
+    //     // dd($user);
+    //     return [
+    //         'success' => true,
+    //         'user' =>  [
+    //             'id' => $user["id"],
+    //             'first_name' => $user["first_name"],
+    //             'last_name' => $user["last_name"],
+    //             'email' => $user["email"],
+    //             'phone' => $user["phone"]
+    //         ],
+    //         'roles' => $user["roles"],
+    //         // 'permissions'=> $user["permissions"],
+    //         'token' => $user->createToken('demo')->accessToken
+    //     ];
+    // }
+
+    public function login(array $data): array
+{
+    $validator = ValidationRules::validate($data, ValidationRules::$userLoginRules);
+    $loginCheck = UserHelper::attemptLoging($data);
+    if (!$loginCheck) {
+        return ["success" => false, "message" => "Invalid credentials"];
+    }
+
+    $userId = Auth::id();
+    $user = $this->userRepository->findUserInformation($userId);
+
+    if (!$user) {
+        return [
+            'success' => false,
+            'message' => 'Authentication failed'
+        ];
+    }
+
+    return [
+        'success' => true,
+        'user' => [
+            'id' => $user['id'],
+            'first_name' => $user['first_name'],
+            'last_name' => $user['last_name'],
+            'email' => $user['email'],
+            'phone' => $user['phone']
+        ],
+        'roles' => $user['roles'],
+        'token' => Auth::user()->createToken('demo')->accessToken
+    ];
 }
 
 
+
+
+
+
+
+    public function assignManyRoles(User $user, array $roles): array
+    {
+
+        // $user = $this->userRepository->find($id)["data"];
+        // $invalidRoles = $this->roleRepository->getInvalidRoles($roles);
+
+        // if (!empty($invalidRoles)) {
+        //     return [
+        //         'success' => false,
+        //         'message' => 'One or more roles are invalid.',
+        //         'invalid_roles' => $invalidRoles
+        //     ];
+        // }
+        $user->syncRoles($roles);
+        return [
+            'success' => true,
+            'message' => 'Roles assigned successfully.',
+            'roles' => $user->getRoleNames()
+        ];
+    }
+
+    public function assignRole(int $id, int $roleId): array
+    {
+
+        $validator = ValidationRules::validate(["role" => $roleId], ValidationRules::$roleIdRule);
+        $user = $this->userRepository->find($id)["data"];
+        $role = $this->roleRepository->find($roleId)["data"];
+        if($user->hasRole($role->name))
+            return ["success" => false,  "message" => "user already has this role"];
+        $result = $this->userRepository->assignRoleToUser($user, $role->name);
+        if ($result)
+            return ["success" => true,  "message" => "role assigned successfully"];
+    }
+
+    public function revokeRole(int $id, $data): array
+    {
+        $validator = ValidationRules::validate(["role" => $data], ValidationRules::$roleIdRule);
+        $user = $this->userRepository->find($id)["data"];
+        $role = $this->roleRepository->find($data)["data"];
+
+        if (!$this->userRepository->userHasRole($user, $role->name))
+            return ["success" => false, "message" => "User does not have this role"];
+
+        $user->removeRole($role->name);
+        return ["success" => true, "message" => "Role revoked successfully"];
+    }
+
+
+    public function assignManyPermissions(  PermissionRepository $permissionRepository, int $id, array $permissions): array{
+
+    $user = $this->userRepository->find($id)["data"];
+    $invalidPermissions = $permissionRepository->getInvalidPermissions($permissions);
+
+    if (!empty($invalidPermissions)) {
+        return [
+            'success' => false,
+            'message' => 'One or more permissions are invalid.',
+            'invalid_permissions' => $invalidPermissions
+        ];
+    }
+
+    $user->syncPermissions($permissions);
+
+    return [
+        'success' => true,
+        'message' => 'Permissions assigned successfully.',
+        'permissions' => $user->getPermissionNames()
+    ];
+}
+
+public function assignPermission(PermissionRepository $permissionRepository, int $id, int $permissionId): array
+{
+    $validator = ValidationRules::validate(["permission" => $permissionId], ValidationRules::$permissionIdRule);
+    $user = $this->userRepository->find($id)["data"];
+    $permission = $permissionRepository->find($permissionId)["data"];
+
+    if ($user->hasPermissionTo($permission->name)) {
+        return [
+            'success' => false,
+            'message' => 'User already has this permission.'
+        ];
+    }
+    $user->givePermissionTo($permission->name);
+    return ["success" => true, "message" => "Permission assigned successfully"];
+}
+
+public function revokePermission(PermissionRepository $permissionRepository, int $id, $data): array
+{
+    $validator = ValidationRules::validate(["permission" => $data], ValidationRules::$permissionIdRule);
+    $user = $this->userRepository->find($id)["data"];
+    $permission = $permissionRepository->find($data)["data"];
+
+    if (!$user->hasPermission($user, $permission->name)) {
+        return ["success" => false, "message" => "User does not have this permission"];
+    }
+
+    $user->revokePermissionTo($permission->name);
+    return ["success" => true, "message" => "Permission revoked successfully"];
+}
+
+}

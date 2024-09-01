@@ -4,69 +4,86 @@ namespace App\Http\Controllers;
 
 
 use Exception;
-use Validator;
-use App\Models\User;
 use Illuminate\Http\Request;
+use App\Services\UserService;
 use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Controller;
-use Illuminate\Support\Facades\Auth; 
+use Illuminate\Validation\ValidationException;
 
 
 
 class AuthController extends Controller
 {
+
+
+    private $userService;
+
+    public function __construct(UserService $userService)
+    {
+        $this->userService = $userService;
+    }
+    
     public function register(Request $request){
 
-        try{
-            $validator = Validator::make($request->all(), [
-                "first_name" => "required",
-                "last_name" => "required",
-                "phone" => "required",
-                "email" => "required|email",
-                "password" => "required",
-                "c_password" => "required|same:password"
-            ]);
-    
-            if($validator->fails())
-                return response()->json(["message"=>$validator->errors()], 401);
-            
-            if(Auth::attempt(["email" => request("email"), "password"=>request("password")]))
-                return response()->json(["message"=>"User aleary exist!", 401]);
-            
-            $data= $request->all();
-            $data["password"]= bcrypt($data["password"]);
-            $user= User::create($data);
-            $success["token"]= $user->createToken("restaurant")->accessToken;
-            return response()->json(['success'=>$success], 200); 
-        }catch(Exception $e){
-            Log::error("Failed to register: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+        try {
+
+            $data = $request->only(['first_name', 'last_name', 'phone', 'email', 'password', 'c_password']);
+            $result = $this->userService->regiser($data);
+            $status = $result['success'] ? 201 : 400;
+            return response()->json($result, 201);
+
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (Exception $e) {
+            Log::error("Failed to register user: {$e->getMessage()}");
+            return response()->json([
+                'success' => false,
+                'message' => 'Server error',
+                'error' => $e->getMessage()
+            ], 500);
         }
 
     }
 
-    public function login(){
-        try{
-            $validator = Validator::make(
-                ['email' => request('email'), 'password' => request('password')],[
-                    'email' => 'required|email',
-                    'password' => 'required',
-                ],
-            );
-            if ($validator->fails()) 
-                return response()->json(['message' => $validator->errors()], 401);
-            if(!Auth::attempt(['email' => request('email'), 'password' => request('password')]))
-                return response()->json(['messages' => 'Unauthorised'], 401);
-    
-                    $user = Auth::user();
-                    return response()->json([
-                        'messages' => 'success',
-                        'token' => $user->createToken('restaurant')->accessToken
-                    ], 200);
+    public function login(Request $request){
+        try {
+            $data = $request->only(['email', 'password']);
+            $result = $this->userService->login($data);
 
-        }catch(Exception $e){
-            Log::error("Failed to Log in: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+
+            $token= $result["token"];
+            // unset($result["token"]);
+            $status = $result['success'] ? 200 : 401;
+
+            return response()->json($result, 200)->cookie('token', $token, 60, '/', null, false, true);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (Exception $e) {
+            Log::error("Failed to login user: {$e->getMessage()}");
+            return response()->json([
+                'success' => false,
+                'message' => 'Server error',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
-}
+
+    public function logout(Request $request)
+    {
+        $token = $request->user()->token();
+        $token->revoke();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'You have been successfully logged out.'
+        ], 200);
+    }
 }

@@ -3,194 +3,239 @@
 namespace App\Http\Controllers;
 
 use Exception;
-// use App\Models\Role;
-use Validator;
-// use Spatie\Permission\Models\User;
-use App\Models\User;
 use Illuminate\Http\Request;
 use App\Services\UserService;
-use Spatie\Permission\Models\Role;
-use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Controller;
-use Illuminate\Support\Facades\Auth;
-use Spatie\Permission\Models\Permission;
+use App\Repositories\PermissionRepository;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+
 
 class UserController extends Controller
 {
+    private $userService;
 
-    public function index(){
-        try{
-            $UserService = new UserService();
-            $users=$UserService->getAllUsers();
-            $status= $users["success"] ? 200 : 401;
-            return response()->json($users["data"], $status);
+    public function __construct(UserService $userService)
+    {
+        $this->userService = $userService;
+    }
 
-        }catch(Exception $e){
-            Log::error("failed to get users: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e->getMessage(),500]);
+    public function store(Request $request)
+    {
+        try {
+            $data = $request->all();
+            $result = $this->userService->create($data);
+            return response()->json($result, 200);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
         }
     }
 
-    public function show($id){
-        try{
-            $user = User::find($id);
-            if (!$user) 
-                return response()->json(['message'  => "user not found"], 422);
-            return response()->json($user, 200);
-        }catch(Exception $e){
-            Log::error("failed to get user: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+    public function update(Request $request, $userId)
+    {
+        try {
+            $data = $request->all();
+            $result = $this->userService->update($userId, $data);
+            return response()->json($result, 200);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 404);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => "server error",
+            ], 500);
         }
     }
 
-    public function store(Request $request){
-
-        try{
-            $UserService= new UserService();
-            $user= $UserService->createUser($request->all());
-            $status= $user["success"] ? 200 : 401;
-            return response()->json($user, $status);
-        }catch(Exception $e){
-            Log::error("Failed to register: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+    public function destroy($userId)
+    {
+        try {
+            $result = $this->userService->delete($userId);
+            return response()->json($result, 200);
+        } catch (ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 404);
+        } catch (Exception $e) {
+            return response()->json(['error' => 'An unexpected error occurred.'], 500);
         }
     }
 
-    public function destroy($userId){
-        try{
-            $UserService= new UserService();
-            $user= $UserService->deleteUser($userId);
-            $status= $user["success"] ? 200 : 401;
-            return response()->json($user, $status);
+    public function show($userId)
+    {
+        try {
+            $result = $this->userService->getUserInformation($userId);
 
-        }catch(Exception $e){
-            Log::error("failed to delete user: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e->getMessage(),500]);
-        }   
+            $status = $result['success'] ? 200 : 404;
+            return response()->json($result, 200);
+        } catch (ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 404);
+        } 
+        // catch (Exception $e) {
+        //     return response()->json(['error' => 'An unexpected error occurred.', 'message' => $e->getMessage()], 500);
+        // }
     }
 
-    public function update($userId, Request $request){
+    public function index(Request $request)
+    {
+        $perPage = $request->query('per_page', 10);
+        $page = $request->query('page', null);
 
-        try{
-            $UserService= new UserService();
-            $user= $UserService->updateUser($userId, $request->all());
-            $status= $user["success"] ? 200 : 401;
-            return response()->json($user, $status);
-            
-        }catch(Exception $e){
-            Log::error("failed to update user: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e->getMessage(),500]);
+        try {
+            $result = $this->userService->getAll($perPage, $page);
+            if (!$result['success']) {
+                return $result;
+            }
+
+            if (isset($result["metadata"])) {
+                $metadata = $result["metadata"];
+                unset($result["metadata"]);
+            }
+            $response = response()->json($result, 200);
+
+            if (isset($metadata)) {
+                $response->headers->set('X-Total-Items', $metadata['total']);
+                $response->headers->set('X-Current-Page', $metadata['current_page']);
+                $response->headers->set('X-Last-Page', $metadata['last_page']);
+                $response->headers->set('X-Per-Page', $metadata['per_page']);
+                $response->headers->set('X-From', $metadata['from']);
+                $response->headers->set('X-To', $metadata['to']);
+            }
+
+            return $response;
+        } catch (Exception $e) {
+            return response()->json(['error' => 'An unexpected error occurred.', 'message' => $e->getMessage()], 500);
         }
     }
 
-    
 
-    public function assignRole(Request $request, $userId){
 
-        try{
-            $validator = Validator::make($request->all(), [
-                'role' => 'required|numeric'
-            ]);
-            if ($validator->fails()) 
-                return response()->json(["message" => $validator->errors()], 422);
-            
-            $user = User::find($userId);
-            if ($user == null) 
-                return response()->json(['message'  => "user not found"], 422);
+    public function assignRole(Request $request, $userId)
+    {
 
-            $role = Role::find($request->input("role"));
-            if($role == null) 
-                return response()->json(['message'  => "role not found"], 422);
-            
-    
-            $user->assignRole($role['name']);
-            return response()->json(['message' => 'Role assigned successfully'], 200);
-        }catch(Exception $e){
-            Log::error("failed to assign role: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+        try {
+            $data = $request->query("role");
+            $result = $this->userService->assignRole($userId, $data);
+            // $status = $result['success'] ? 200 : 404;
+            return response()->json($result, 200);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        }catch(ModelNotFoundException $e){
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 404);
+        } 
+        catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
         }
     }
 
-    public function revokeRole(Request $request, $userId){
+    public function revokeRole(Request $request, int $userId)
+    {
 
-        try{
-            $validator = Validator::make($request->all(), [
-                'role' => 'required|numeric'
-            ]);
-            if ($validator->fails()) 
-                return response()->json(["message" => $validator->errors()], 422);
-            
-           
-            $user = User::find($userId);
-            if (!$user) 
-                return response()->json(['message' => 'User not found'], 404);
+        $data = $request->query("role");
 
-            $role = Role::find($request->input("role"));
-            if($role == null) 
-                return response()->json(['message'  => "role not found"], 422);
-    
-
-            $user->removeRole($role['name']);
-            return response()->json(['message' => 'Role revoked successfully'], 200);
-
-        }catch(Exception $e){
-            Log::error("failed to revoke role: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+        try {
+            $result = $this->userService->revokeRole($userId, $data);
+            $status = $result['success'] ? 200 : 400;
+            return response()->json($result, $status);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        }catch(ModelNotFoundException $e){
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 404);
+        } 
+        catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 
-    public function assignPermission(Request $request, $userId){
+    public function assignPermission(Request $request, int  $userId)
+    {
 
-        try{
-            $validator = Validator::make($request->all(), [
-                'permission' => 'required|numeric'
-            ]);
-            if ($validator->fails()) 
-                return response()->json(["message" => $validator->errors()], 422);
-            
-            $user = User::find($userId);
-            if ($user == null) 
-                return response()->json(['message'  => "user not found"], 422);
-
-            $permission = Permission::find($request->input("permission"));
-
-            if($permission == null) 
-                return response()->json(['message'  => "Permission not found"], 422);
-            
-    
-            $user->assignPermissionTo($permission['name']);
-            return response()->json(['message' => 'Permission assigned successfully'], 200);
-        }catch(Exception $e){
-            Log::error("failed to assign permission: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+        $permissionRepository = app(PermissionRepository::class);
+        try {
+            $data = $request->query("permission");
+            $result = $this->userService->assignPermission($permissionRepository, $userId, $data);
+            $status = $result['success'] ? 200 : 400;
+            return response()->json($result, $status);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } 
+        catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
         }
     }
 
-    public function revokePermission(Request $request, $userId){
+    public function revokePermission(Request $request, $userId)
+    {
 
-        try{
-            $validator = Validator::make($request->all(), [
-                'permission' => 'required|numeric'
-            ]);
-            if ($validator->fails()) 
-                return response()->json(["message" => $validator->errors()], 422);
-            
-           
-            $user = User::find($userId);
-            if (!$user) 
-                return response()->json(['message' => 'User not found'], 404);
+        $data = $request->query("permission");
+        $permissionRepository = app(PermissionRepository::class);
 
-            $permission = Permission::find($request->input("permission"));
-            if($permission == null) 
-                return response()->json(['message'  => "permission not found"], 422);
-    
-
-            $user->removeRole($permission['name']);
-            return response()->json(['message' => 'Permission revoked successfully'], 200);
-
-        }catch(Exception $e){
-            Log::error("failed to revoke permission: {$e->getMessage()}");
-            return response()->json(['message' => 'Server error', 'error'=>$e,500]);
+        try {
+            $result = $this->userService->revokePermission($permissionRepository, $userId, $data);
+            $status = $result['success'] ? 200 : 400;
+            return response()->json($result, $status);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 }

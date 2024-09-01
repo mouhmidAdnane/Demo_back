@@ -2,90 +2,159 @@
 
 namespace App\Services;
 
-use Spatie\Permission\Models\Role;
-use Validator;
+use Exception;
+use App\Utils\ValidationRules;
+use App\Repositories\RoleRepository;
+use App\Repositories\PermissionRepository;
+use App\Services\Interfaces\ServiceInterface;
+use App\Services\Interfaces\HasPermissionInterface;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 
-class RoleService{
 
-    public static $storeRules= [
-        "name" => "required|max:125|unique:roles",
-        'description' => 'max:511'
-    ];
+class RoleService implements ServiceInterface, HasPermissionInterface{
 
-    public static $updateRules= [
-        'name' => 'max:125|unique:roles',
-        'description' => 'max:511'  
-    ];
 
-    public static function validate(array $data, array $rules){
-        $validator = Validator::make($data, $rules);
-        dd($validator);
-        
-        if ($validator->fails())
-            return ["message" => $validator->errors()];
-        return null;
+    private $roleRepository;
+    private $permissionRepository;
+
+
+    public function __construct(RoleRepository $roleRepositry,PermissionRepository $permissionRepository)
+    {
+        $this->permissionRepository = $permissionRepository;
+        $this->roleRepository = $roleRepositry;
+    
     }
 
-    public function getAllRoles():array{
-        $roles = Role::select("id","name","description")->get();
-            if (!$roles) 
+    
+    public function getAll(bool $namesOnly= null):array{
+
+
+        if($namesOnly){
+            $roles=  $this->roleRepository->allNames() ;
+            $roles= $roles->map(function($role){
+                return $role->name;
+            });
+        }else{
+            $roles= $this->roleRepository->all();
+        }
+        
+            if ($roles->isEmpty()) 
                 return ["success"=> false,  "message"=>"No roles found"];
             return ["success"=> true,  "data"=>$roles];
         
     }
 
-    public function getRoleById($roleId):array{
-        $role= Role::with("permissions")->find($roleId);
-            $result = [
-                'id' => $role->id,
-                'name' => $role->name,
-                'description' => $role->description,
-                'permissions' => $role->permissions->pluck('name')
-            ];
-
-            if (!$role) 
-                return ["success"=> false,  "message"=>"role not found"];
-            return ["success"=> true,  "data"=>$result];
+    public function find($roleId):array{
+        $role= $this->roleRepository->findRoleInformation($roleId);
+        return $role;
     }
 
-    public function createRole(array $data):array{
-        $validator = Validator::make($data, Role::$storeRules);
-        
-        if ($validator->fails())
-            return ["success"=> false,  "message"=>$validator->errors()];
+    public function create(array $data):array{
+        $validator = ValidationRules::validate($data, ValidationRules::$roleStoreRules); 
+        if($this->roleRepository->exists(["name"=>$data["name"]]))
+            return ["success"=> false, "message"=>"role already exists"];
+            
+        if (isset($data['permissions'])) {
+            $permissions = $data['permissions'];
+            unset($data['permissions']);
+        }
 
-        if(!Role::where("name", $data["name"])->exists());
-            return ["success"=> false,  "message"=>"Role aleary exist!"];
+            
+        $data["guard_name"]= "api";
+        $role= $this->roleRepository->create($data);
 
-        $description= $data["description"] ? $data["description"] : null;
-        $data= ["name"=>$data["name"], "description"=> $description];  
-          
-        $role= Role::create($data);
-        return ["success"=> true, "role"=>$role];
+        if (isset($permissions)) {
+            $syncPermissionsResult = $this->assignManyPermissions($role["data"], $permissions);
+            if (!$syncPermissionsResult['success']) {
+                return $syncPermissionsResult;
+            }
+        }
+        return ["success"=>true, "role"=>$role];
     }
 
-    public function deleteRole($roleId):array{
-        $role = Role::find($roleId)->first();
-        if ($role == null) 
-            return ["success"=> false,  "message"=>"role not found"];
-    
-        $role->delete();
+    public function delete(int $id):array{
+        $role = $this->roleRepository->Exists(["id"=>$id]);
+        if(!$role)
+            throw new ModelNotFoundException("Role not found");
+        $this->roleRepository->delete($id);
         return ["success"=> true,  "message"=>"role deleted successfully"];
     }
 
-    public function updateRole($roleId, array $data){
-        $validator = self::validate($data, self::$updateRules);
+    public function update(int $id, array $data): array{
         
-        if ($validator != null)
-            return $validator;
-        $role = Role::find($roleId)->first();
 
-        if ($role== null) 
-            return ["success"=> false,  "message"=>"role not found"];
-        
-        $updatedData = ["name" => $data['name'], "description" => $data['description'] ? $data['description'] : null];
-        $role->update($updatedData);
-        
-        return ["success"=> true,  "message"=>"role updated successfully"];
+    $validator = ValidationRules::validate($data, ValidationRules::$roleUpdateRules);
+    $role = $this->roleRepository->find($id)["data"];
+
+    if (isset($data['permissions'])) {
+        $permissions = $data['permissions'];
+        unset($data['permissions']);
     }
+
+    if (isset($permissions)) {
+        $syncPermissionsResult = $this->assignManyPermissions($role, $permissions);
+        if (!$syncPermissionsResult['success']) {
+            return $syncPermissionsResult;
+        }
+    }
+
+    $role = $this->roleRepository->update($id, $data);
+
+
+    return ["success" => true, "message" => "Role updated successfully", "role" => $role];
+    }
+
+    public function assignPermission(int $id, $data):array{
+        $validator = ValidationRules::validate(["permission"=>$data], ValidationRules::$permissionIdRule);
+        
+        $currentRole = $this->roleRepository->find($id)["data"];
+        $permission= $this->permissionRepository->find($data)["data"];
+
+        try{
+            $currentRole->givePermissionTo($permission["name"]);
+                // return["success" => false, 'message' => 'this role already have this permission'];
+            return["success" => true, 'message' => 'Permission assigned successfully'];
+        }catch(Exception $e){
+            throw new \RuntimeException("Failed to assign permission to role",0, $e);
+        }
+
+
+    }
+
+    public function revokePermission(int $id, $data): array
+    {
+        $validator = ValidationRules::validate(["permission" => $data], ValidationRules::$permissionIdRule);
+        $currentRole = $this->roleRepository->find($id)["data"];
+        $permission = $this->permissionRepository->find($data)["data"];
+        
+        if (!$currentRole->hasPermissionTo($permission["name"])) {
+            return ["success" => false, "message" => "Role does not have this permission"];
+        }
+        $currentRole->revokePermissionTo($permission["name"]);
+        return ["success" => true, "message" => "Permission revoked successfully"];
+    }
+
+    public function assignManyPermissions($role, array $permissions): array
+{
+    // $role = $this->roleRepository->find($roleId)["data"];
+    // $invalidPermissions = $this->permissionRepository->getInvalidPermissions($permissions);
+
+    // if (!empty($invalidPermissions)) 
+    //     return [
+    //         'success' => false,
+    //         'message' => 'One or more permissions are invalid.',
+    //         'invalid_permissions' => $invalidPermissions
+    //     ];
+
+    $role->syncPermissions($permissions);
+
+    return [
+        'success' => true,
+        'message' => 'Permissions assigned successfully.',
+        'permissions' => $role->getPermissionNames()
+    ];
+}
+
+
+
 }
