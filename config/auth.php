@@ -103,7 +103,14 @@ return [
             'table' => 'password_reset_tokens',
             'expire' => 60,
             'throttle' => 60,
-        ],
+            // 'password' => [
+            //     'required',
+            //     'string',
+            //     'min:12', // Minimum length requirement
+            //     'regex:^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+',
+            //     // Custom regex pattern for requiring at least one uppercase letter, one lowercase letter, one number, and one special character  
+            // ]
+        ]
     ],
 
     /*

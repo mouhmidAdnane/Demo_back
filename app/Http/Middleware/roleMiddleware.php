@@ -14,20 +14,18 @@ class roleMiddleware
      *
      * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
      */
-    public function handle(Request $request, Closure $next, ...$rolesOrPermissions): Response{
+    public function handle(Request $request, Closure $next, ...$permissions): Response{
         if(!Auth::guard('api')->check()){
             return response()->json(["error"=> "unauthorized"], 403);
         }
 
-        if (empty($rolesOrPermissions)) {
-
-            // dd($rolesOrPermissions);
+        if (empty($permission)) {
             return $next($request);
         }
 
-        foreach($rolesOrPermissions as $rolesOrPermission){
+        foreach($permissions as $permission){
             
-            if(Auth::guard('api')->user()->hasRole($rolesOrPermission)){
+            if(Auth::guard('api')->user()->hasPermissionTo($permission)){
                 return $next($request);
             }
             
